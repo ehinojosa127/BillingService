@@ -14,8 +14,10 @@ obj/
 *.p12
 *.pem
 *.key
-storage/
-!storage/.gitkeep
+# Solo datos runtime en la raíz (NO el namespace Infrastructure/Storage)
+/storage/
+!/storage/.gitkeep
+src/Billing.WebApi/storage/
 
 ## IDE
 .vs/
