@@ -1,0 +1,36 @@
+## Build
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+## Secrets and local files
+.env
+*.pfx
+*.p12
+*.pem
+*.key
+storage/
+!storage/.gitkeep
+
+## IDE
+.vs/
+.idea/
+*.swp
+.DS_Store
+
+## Test / coverage
+TestResults/
+coverage/
+*.coverage
+*.coveragexml
+artifacts/
+
+## EF
+*.db
+*.db-shm
+*.db-wal

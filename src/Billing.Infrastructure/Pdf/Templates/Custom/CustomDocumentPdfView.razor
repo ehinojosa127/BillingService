@@ -1,0 +1,353 @@
+@namespace Billing.Infrastructure.Pdf.Templates.Custom
+@inherits Microsoft.AspNetCore.Components.ComponentBase
+@using Billing.Application.Pdf
+@using System.Globalization
+@using Microsoft.AspNetCore.Components
+
+<div class="pdf-page">
+    <style>
+        @@page { size: A4 portrait; margin: 0; }
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
+        }
+        .pdf-page {
+            font-family: Arial, Helvetica, sans-serif;
+            font-size: 10px;
+            color: #111827;
+            width: 100%;
+            max-width: 100%;
+            line-height: 1.35;
+            overflow: visible;
+            padding: 6mm;
+            box-sizing: border-box;
+        }
+        table {
+            border-collapse: separate;
+            border-spacing: 0;
+            max-width: 100%;
+        }
+        .header-table { width: 100%; margin-bottom: 12px; }
+        .header-table td { vertical-align: top; }
+        .logo-wrap { width: 150px; padding-right: 12px; }
+        .logo {
+            display: block;
+            max-width: 140px;
+            max-height: 88px;
+            width: auto;
+            height: auto;
+            object-fit: contain;
+        }
+        .issuer-name { font-size: 14px; font-weight: 700; text-align: center; }
+        .issuer-line { text-align: center; font-size: 11px; }
+        .frame,
+        table.meta,
+        table.items {
+            width: 100%;
+            border: 1px solid #111827;
+            border-radius: 4px;
+        }
+        .frame td {
+            border: none;
+            padding: 10px 12px;
+            vertical-align: top;
+        }
+        .doc-box { width: 210px; }
+        .doc-box td {
+            text-align: center;
+            font-weight: 700;
+            font-size: 11px;
+            line-height: 1.45;
+            padding: 10px 12px;
+        }
+        .doc-box .frame td:first-child { border-radius: 4px; }
+        .doc-box .type { font-size: 10px; font-weight: 700; }
+        table.client-box {
+            width: 100%;
+            margin-bottom: 10px;
+        }
+        table.client-box td {
+            font-size: 11px;
+            line-height: 1.5;
+            padding: 10px 12px;
+        }
+        .client-row {
+            display: block;
+            width: 100%;
+            margin-bottom: 4px;
+        }
+        .client-row:last-child { margin-bottom: 0; }
+        .client-row strong {
+            display: inline-block;
+            min-width: 90px;
+        }
+        .obs-label { font-weight: 700; margin: 10px 0 6px; font-size: 11px; }
+        .related { margin: 6px 0; font-size: 10px; }
+        table.meta {
+            width: 100%;
+            table-layout: fixed;
+            margin-bottom: 10px;
+        }
+        table.meta td {
+            border-right: 1px solid #111827;
+            padding: 6px 8px;
+            vertical-align: top;
+            font-size: 10px;
+        }
+        table.meta td:first-child { border-top-left-radius: 4px; border-bottom-left-radius: 4px; }
+        table.meta td:last-child { border-right: none; border-top-right-radius: 4px; border-bottom-right-radius: 4px; }
+        .meta-label { font-weight: 700; display: block; margin-bottom: 2px; text-transform: uppercase; }
+        table.items {
+            width: 100%;
+            table-layout: fixed;
+            margin-bottom: 10px;
+        }
+        table.items thead { display: table-header-group; }
+        table.items tr { page-break-inside: avoid; break-inside: avoid; }
+        table.items th,
+        table.items td {
+            border-right: 1px solid #111827;
+            border-bottom: 1px solid #111827;
+            padding: 7px 6px;
+            vertical-align: top;
+            font-size: 10px;
+            overflow-wrap: anywhere;
+            word-wrap: break-word;
+        }
+        table.items th {
+            font-size: 9px;
+            font-weight: 700;
+            text-transform: uppercase;
+            text-align: center;
+            background: #fff;
+        }
+        table.items thead th:first-child { border-top-left-radius: 4px; }
+        table.items thead th:last-child { border-top-right-radius: 4px; }
+        table.items tbody tr:last-child td:first-child { border-bottom-left-radius: 4px; }
+        table.items tbody tr:last-child td:last-child { border-bottom-right-radius: 4px; }
+        table.items th:last-child,
+        table.items td:last-child { border-right: none; }
+        table.items tbody tr:last-child td { border-bottom: none; }
+        .col-qty { width: 11%; text-align: center; }
+        .col-um { width: 12%; text-align: center; }
+        .col-desc { width: 41%; text-align: left; }
+        .col-unit { width: 18%; text-align: right; }
+        .col-total { width: 18%; text-align: right; }
+        .summary-block { page-break-inside: avoid; break-inside: avoid; }
+        .amount-words { margin: 8px 0; font-weight: 700; font-size: 10px; }
+        .footer-row { width: 100%; }
+        .footer-row td { vertical-align: top; border: none; }
+        .qr { width: 105px; height: 105px; object-fit: contain; }
+        .totals { width: 100%; font-size: 10px; }
+        .totals td { padding: 4px 0; border: none; }
+        .totals .label { text-align: right; padding-right: 10px; font-weight: 700; }
+        .totals .value { text-align: right; width: 110px; }
+        .totals .grand .label,
+        .totals .grand .value { font-size: 11px; font-weight: 700; padding-top: 4px; }
+        .legal {
+            margin-top: 10px;
+            font-size: 8px;
+            color: #374151;
+            text-align: center;
+            line-height: 1.45;
+        }
+    </style>
+
+    <table class="header-table">
+        <tr>
+            <td class="logo-wrap">
+                @if (!string.IsNullOrWhiteSpace(Model.Branding.LogoDataUri))
+                {
+                    <img src="@Model.Branding.LogoDataUri" alt="Logo" class="logo" />
+                }
+            </td>
+            <td>
+                <div class="issuer-name">@Model.Issuer.TradeName</div>
+                <div class="issuer-line">@Model.Issuer.LegalName</div>
+                @if (!string.IsNullOrWhiteSpace(Model.Issuer.AddressLine))
+                {
+                    <div class="issuer-line">@Model.Issuer.AddressLine</div>
+                }
+                @if (!string.IsNullOrWhiteSpace(Model.Issuer.Phone))
+                {
+                    <div class="issuer-line">Tel: @Model.Issuer.Phone</div>
+                }
+                @if (!string.IsNullOrWhiteSpace(Model.Issuer.Email))
+                {
+                    <div class="issuer-line">@Model.Issuer.Email</div>
+                }
+            </td>
+            <td class="doc-box">
+                <table class="frame">
+                    <tr>
+                        <td>
+                            <div>R.U.C. @Model.Issuer.Ruc</div>
+                            <div class="type">@Model.Document.TypeLabel</div>
+                            <div>N° @Model.Document.FullNumber</div>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </table>
+
+    <table class="frame client-box">
+        <tr>
+            <td>
+                <div class="client-row"><strong>Cliente:</strong> @Model.Recipient.Name</div>
+                @if (!string.IsNullOrWhiteSpace(Model.Recipient.Address))
+                {
+                    <div class="client-row"><strong>Dirección:</strong> @Model.Recipient.Address</div>
+                }
+                <div class="client-row"><strong>@Model.Recipient.IdentityTypeLabel:</strong> @Model.Recipient.IdentityNumber</div>
+            </td>
+        </tr>
+    </table>
+
+    @if (Model.RelatedDocuments.Count > 0)
+    {
+        <div class="related">
+            @foreach (var related in Model.RelatedDocuments)
+            {
+                <div><strong>Doc. relacionado:</strong> @related.TypeLabel @related.FullNumber — @related.Reason</div>
+            }
+        </div>
+    }
+
+    <div class="obs-label">Observaciones</div>
+    @if (!string.IsNullOrWhiteSpace(Model.Observation))
+    {
+        <div style="margin-bottom: 6px;">@Model.Observation</div>
+    }
+
+    <table class="meta">
+        <tr>
+            <td>
+                <span class="meta-label">Fecha emisión</span>
+                @Model.Document.IssueDate
+            </td>
+            <td>
+                <span class="meta-label">Fec. vencimiento</span>
+                @(Model.Document.DueDate ?? "—")
+            </td>
+            <td>
+                <span class="meta-label">Orden compra / pedido</span>
+                @(Model.Document.ExternalReference ?? "—")
+            </td>
+            <td>
+                <span class="meta-label">Guía</span>
+                —
+            </td>
+            <td>
+                <span class="meta-label">Cond. de pago</span>
+                @Model.Document.PaymentFormLabel
+            </td>
+        </tr>
+    </table>
+
+    <table class="items">
+        <thead>
+            <tr>
+                <th class="col-qty">Cantidad</th>
+                <th class="col-um">U.M</th>
+                <th class="col-desc">Descripción</th>
+                <th class="col-unit">Precio unit.</th>
+                <th class="col-total">Importe (Inc. IGV)</th>
+            </tr>
+        </thead>
+        <tbody>
+            @if (Model.Items.Count == 0)
+            {
+                <tr>
+                    <td class="col-qty">&nbsp;</td>
+                    <td class="col-um">&nbsp;</td>
+                    <td class="col-desc" style="text-align: center; color: #6b7280;">Sin ítems registrados.</td>
+                    <td class="col-unit">&nbsp;</td>
+                    <td class="col-total">&nbsp;</td>
+                </tr>
+            }
+            else
+            {
+                @foreach (var item in Model.Items)
+                {
+                    <tr>
+                        <td class="col-qty">@FormatQty(item.Quantity)</td>
+                        <td class="col-um">@item.UnitLabel</td>
+                        <td class="col-desc">@item.Description</td>
+                        <td class="col-unit">@FormatMoney(item.UnitPrice)</td>
+                        <td class="col-total">@FormatMoney(item.Total)</td>
+                    </tr>
+                }
+            }
+        </tbody>
+    </table>
+
+    <div class="summary-block">
+        @if (!string.IsNullOrWhiteSpace(Model.Totals.AmountInWords))
+        {
+            <div class="amount-words">SON: @Model.Totals.AmountInWords</div>
+        }
+
+        <table class="footer-row">
+            <tr>
+                @if (Model.ShowQr)
+                {
+                    <td style="width: 130px;">
+                        <img src="@Model.Qr.PngDataUri" alt="QR" class="qr" />
+                    </td>
+                }
+                <td style="padding-left: @(Model.ShowQr ? "12px" : "0");">
+                    <table class="totals">
+                        @if (Model.ShowTaxBreakdown)
+                        {
+                            <tr>
+                                <td class="label">OP. GRAVADA (@CurrencySymbol):</td>
+                                <td class="value">@FormatMoney(Model.Taxes.TaxableAmount)</td>
+                            </tr>
+                            @if (Model.Taxes.ExemptAmount > 0)
+                            {
+                                <tr>
+                                    <td class="label">OP. EXONERADA (@CurrencySymbol):</td>
+                                    <td class="value">@FormatMoney(Model.Taxes.ExemptAmount)</td>
+                                </tr>
+                            }
+                            @if (Model.Taxes.UnaffectedAmount > 0)
+                            {
+                                <tr>
+                                    <td class="label">OP. INAFECTA (@CurrencySymbol):</td>
+                                    <td class="value">@FormatMoney(Model.Taxes.UnaffectedAmount)</td>
+                                </tr>
+                            }
+                            <tr>
+                                <td class="label">TOTAL IGV (@CurrencySymbol):</td>
+                                <td class="value">@FormatMoney(Model.Taxes.IgvAmount)</td>
+                            </tr>
+                        }
+                        <tr class="grand">
+                            <td class="label">IMPORTE TOTAL (@CurrencySymbol):</td>
+                            <td class="value">@FormatMoney(Model.Totals.PayableAmount)</td>
+                        </tr>
+                    </table>
+                </td>
+            </tr>
+        </table>
+
+        <div class="legal">@Model.Branding.FooterText</div>
+    </div>
+</div>
+
+@code {
+    [Parameter]
+    public BillingDocumentPdfViewModel Model { get; set; } = default!;
+
+    private string CurrencySymbol => Model.Totals.Currency == "USD" ? "$" : "S/";
+
+    private static string FormatQty(decimal value) =>
+        value.ToString("0.##", CultureInfo.InvariantCulture);
+
+    private string FormatMoney(decimal value) =>
+        $"{CurrencySymbol} {value.ToString("N2", CultureInfo.InvariantCulture)}";
+}

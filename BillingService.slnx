@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Billing.Domain/Billing.Domain.csproj" />
+    <Project Path="src/Billing.Application/Billing.Application.csproj" />
+    <Project Path="src/Billing.Infrastructure/Billing.Infrastructure.csproj" />
+    <Project Path="src/Billing.Shared/Billing.Shared.csproj" />
+    <Project Path="src/Billing.WebApi/Billing.WebApi.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Billing.Tests/Billing.Tests.csproj" />
+  </Folder>
+</Solution>

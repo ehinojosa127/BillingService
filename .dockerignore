@@ -1,0 +1,17 @@
+**/bin/
+**/obj/
+**/TestResults/
+**/Chrome/
+**/ChromeHeadlessShell/
+/tests/
+/.env
+/.env.*
+!/.env.example
+/storage/
+/certs/
+.git/
+.idea/
+.vs/
+*.user
+*.md
+artifacts/

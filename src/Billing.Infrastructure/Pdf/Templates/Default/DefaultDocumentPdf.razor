@@ -1,0 +1,12 @@
+@namespace Billing.Infrastructure.Pdf.Templates.Default
+@inherits Microsoft.AspNetCore.Components.ComponentBase
+@using Billing.Application.Pdf
+@using Billing.Infrastructure.Pdf.Templates.Shared
+@using Microsoft.AspNetCore.Components
+
+<DocumentPdfView Model="Model" />
+
+@code {
+    [Parameter]
+    public BillingDocumentPdfViewModel Model { get; set; } = default!;
+}
