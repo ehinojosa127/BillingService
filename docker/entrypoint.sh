@@ -13,8 +13,5 @@ until dotnet Billing.WebApi.dll --migrate; do
   sleep 2
 done
 
-if ! dotnet Billing.WebApi.dll --ensure-issuer; then
-  echo "WARNING: issuer/series bootstrap failed; API will start anyway." >&2
-fi
-
+# Emisor/series se aseguran en el proceso HTTP (IssuerBootstrapHostedService).
 exec dotnet Billing.WebApi.dll

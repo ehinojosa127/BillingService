@@ -123,6 +123,7 @@ public static class IssuerSeriesBootstrap
         foreach (var key in keys)
         {
             var value = Environment.GetEnvironmentVariable(key);
+            // Docker env_file define claves vacías; tratarlas como no configuradas.
             if (!string.IsNullOrWhiteSpace(value))
             {
                 return value.Trim();

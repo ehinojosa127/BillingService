@@ -25,6 +25,7 @@ builder.Host.UseSerilog((context, services, configuration) =>
 builder.Services.AddControllers();
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration);
+builder.Services.AddHostedService<IssuerBootstrapHostedService>();
 builder.Services.AddAuthentication(ApiKeyAuthenticationOptions.SchemeName)
     .AddScheme<ApiKeyAuthenticationOptions, ApiKeyAuthenticationHandler>(ApiKeyAuthenticationOptions.SchemeName, null);
 builder.Services.AddAuthorization();
