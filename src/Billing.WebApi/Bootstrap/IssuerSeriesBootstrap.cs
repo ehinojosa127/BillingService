@@ -22,9 +22,29 @@ public static class IssuerSeriesBootstrap
 
     public static async Task RunAsync(IServiceProvider services, ILogger logger, CancellationToken cancellationToken = default)
     {
+        try
+        {
+            await RunCoreAsync(services, logger, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Issuer/series bootstrap failed.");
+            throw;
+        }
+    }
+
+    private static async Task RunCoreAsync(IServiceProvider services, ILogger logger, CancellationToken cancellationToken)
+    {
         var configuredRuc = FirstEnv("ISSUER_RUC", "SUNAT_RUC");
         var ruc = configuredRuc ?? DefaultRuc;
         var usedDefaults = configuredRuc is null;
+
+        if (!Domain.ValueObjects.Ruc.IsValid(ruc))
+        {
+            logger.LogWarning("Configured RUC '{Ruc}' is invalid; falling back to demo RUC {Default}.", ruc, DefaultRuc);
+            ruc = DefaultRuc;
+            usedDefaults = true;
+        }
 
         await using var scope = services.CreateAsyncScope();
         var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
