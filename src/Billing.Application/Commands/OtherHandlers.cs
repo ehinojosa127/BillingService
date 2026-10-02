@@ -178,8 +178,19 @@ public sealed class ConsultSunatStatusHandler(
         else
         {
             result = await documentProvider.GetStatusAsync(document, last?.Ticket, cancellationToken);
+            var status = result.Status;
+            if (SunatResponseCodes.IsAlreadyReported(result.ResponseCode, result.Description))
+            {
+                status = SunatStatus.Accepted;
+            }
+            else if (SunatResponseCodes.IsInProcess(result.ResponseCode, result.Description)
+                     || SunatResponseCodes.IsCdrNotReady(result.ResponseCode, result.Description))
+            {
+                status = SunatStatus.InProcess;
+            }
+
             document.ReconcileFromSunat(
-                result.Status,
+                status,
                 result.ResponseCode,
                 result.Description,
                 result.Notes,

@@ -72,39 +72,29 @@ public sealed class RetrySubmissionHandler(
 
         try
         {
-            var submission = document.StartSubmission(clock.UtcNow);
             var simulation = BillingTestSimulation.Resolve(document.Observation, taxProfile.IsProductionEnvironment);
             if (simulation != BillingTestSimulationMode.None)
             {
+                var submission = document.StartSubmission(clock.UtcNow);
                 BillingTestSimulation.Apply(document, submission, simulation, clock.UtcNow);
+            }
+            else if (await TryRecoverFromConsultAsync(document, cancellationToken))
+            {
+                logger.LogInformation(
+                    "Retry for {Document} recovered via getStatusCdr without resending ZIP. Status={Status} Sunat={Sunat}",
+                    document.FullNumber,
+                    document.Status,
+                    document.SunatStatus);
             }
             else
             {
+                var submission = document.StartSubmission(clock.UtcNow);
                 var result = await documentProvider.SubmitAsync(document, signedXml, cancellationToken);
-                if (SunatResponseCodes.IsAlreadyReported(result.ResponseCode, result.Description))
-                {
-                    document.ApplySunatResult(submission, SunatStatus.Accepted, result.ResponseCode, result.Description, result.Notes, result.Ticket, null, clock.UtcNow);
-                }
-                else if (result.CdrZip is { Length: > 0 })
-                {
-                    var parsed = cdrParser.Parse(result.CdrZip);
-                    var status = SunatResponseCodes.IsAlreadyReported(parsed.ResponseCode, parsed.Description)
-                        ? SunatStatus.Accepted
-                        : parsed.Status;
-                    document.ApplySunatResult(submission, status, parsed.ResponseCode, parsed.Description, parsed.Notes, result.Ticket, null, clock.UtcNow);
-                    if (document.GetFile(GeneratedFileKind.Cdr) is null)
-                    {
-                        await SaveRetryFileAsync(document, GeneratedFileKind.Zip, "R-" + document.XmlFileName + ".zip", "application/zip", result.CdrZip, cancellationToken);
-                        await SaveRetryFileAsync(document, GeneratedFileKind.Cdr, "R-" + document.XmlFileName + ".xml", "application/xml", parsed.OriginalXml, cancellationToken);
-                    }
-                }
-                else
-                {
-                    document.ApplySunatResult(submission, result.Status, result.ResponseCode, result.Description, result.Notes, result.Ticket, null, clock.UtcNow);
-                }
+                await ApplySubmissionResultAsync(document, submission, result, cancellationToken);
             }
 
-            if (document.GetFile(GeneratedFileKind.Pdf) is null)
+            if (document.GetFile(GeneratedFileKind.Pdf) is null
+                && document.Status is DocumentStatus.Accepted or DocumentStatus.Observed or DocumentStatus.Rejected or DocumentStatus.Sent)
             {
                 await GeneratePdfAsync(document, cancellationToken);
             }
@@ -120,13 +110,121 @@ public sealed class RetrySubmissionHandler(
         }
         catch (Exception ex) when (ex is SunatUnavailableException or TransientCommunicationException)
         {
-            logger.LogWarning(ex, "Retry submission failed for {DocumentId}", document.Id);
-            document.MarkFailed(ex.GetType().Name, ex.Message, clock.UtcNow);
+            if (SunatResponseCodes.IsInProcess(null, ex.Message) || SunatResponseCodes.IsCdrNotReady(null, ex.Message))
+            {
+                var submission = document.Submissions.LastOrDefault() ?? document.StartSubmission(clock.UtcNow);
+                document.ApplySunatResult(
+                    submission,
+                    SunatStatus.InProcess,
+                    SunatResponseCodes.IsCdrNotReady(null, ex.Message) ? "0127" : "0140",
+                    ex.Message,
+                    null,
+                    null,
+                    null,
+                    clock.UtcNow);
+            }
+            else
+            {
+                logger.LogWarning(ex, "Retry submission failed for {DocumentId}", document.Id);
+                document.MarkFailed(ex.GetType().Name, ex.Message, clock.UtcNow);
+            }
         }
 
         await documentRepository.UpdateAsync(document, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         return DocumentMapper.ToResult(document);
+    }
+
+    /// <summary>
+    /// If SUNAT already has the document (CDR / in process), do not resend the ZIP.
+    /// Resending while 0140 is active extends the lock and turns recoverable states into communicationError.
+    /// </summary>
+    private async Task<bool> TryRecoverFromConsultAsync(ElectronicDocument document, CancellationToken cancellationToken)
+    {
+        if (document.Type.IsShippingGuide)
+        {
+            return false;
+        }
+
+        SubmissionResult consult;
+        try
+        {
+            consult = await documentProvider.GetStatusAsync(document, null, cancellationToken);
+        }
+        catch (Exception ex) when (ex is SunatUnavailableException or TransientCommunicationException)
+        {
+            if (SunatResponseCodes.IsInProcess(null, ex.Message) || SunatResponseCodes.IsCdrNotReady(null, ex.Message))
+            {
+                var submission = document.StartSubmission(clock.UtcNow);
+                document.ApplySunatResult(
+                    submission,
+                    SunatStatus.InProcess,
+                    SunatResponseCodes.IsCdrNotReady(null, ex.Message) ? "0127" : "0140",
+                    ex.Message,
+                    null,
+                    null,
+                    null,
+                    clock.UtcNow);
+                return true;
+            }
+
+            logger.LogInformation(ex, "Consult before retry returned no recoverable state for {Document}", document.FullNumber);
+            return false;
+        }
+
+        if (consult.CdrZip is { Length: > 0 }
+            || consult.Status is SunatStatus.Accepted
+                or SunatStatus.AcceptedWithObservations
+                or SunatStatus.Rejected
+            || SunatResponseCodes.IsAlreadyReported(consult.ResponseCode, consult.Description)
+            || SunatResponseCodes.IsInProcess(consult.ResponseCode, consult.Description)
+            || SunatResponseCodes.IsCdrNotReady(consult.ResponseCode, consult.Description)
+            || consult.Status == SunatStatus.InProcess)
+        {
+            var submission = document.StartSubmission(clock.UtcNow);
+            await ApplySubmissionResultAsync(document, submission, consult, cancellationToken);
+            return true;
+        }
+
+        return false;
+    }
+
+    private async Task ApplySubmissionResultAsync(
+        ElectronicDocument document,
+        DocumentSubmission submission,
+        SubmissionResult result,
+        CancellationToken cancellationToken)
+    {
+        if (SunatResponseCodes.IsAlreadyReported(result.ResponseCode, result.Description))
+        {
+            document.ApplySunatResult(submission, SunatStatus.Accepted, result.ResponseCode, result.Description, result.Notes, result.Ticket, null, clock.UtcNow);
+            return;
+        }
+
+        if (result.CdrZip is { Length: > 0 })
+        {
+            var parsed = cdrParser.Parse(result.CdrZip);
+            var status = SunatResponseCodes.IsAlreadyReported(parsed.ResponseCode, parsed.Description)
+                ? SunatStatus.Accepted
+                : parsed.Status;
+            document.ApplySunatResult(submission, status, parsed.ResponseCode, parsed.Description, parsed.Notes, result.Ticket, null, clock.UtcNow);
+            if (document.GetFile(GeneratedFileKind.Cdr) is null)
+            {
+                await SaveRetryFileAsync(document, GeneratedFileKind.Zip, "R-" + document.XmlFileName + ".zip", "application/zip", result.CdrZip, cancellationToken);
+                await SaveRetryFileAsync(document, GeneratedFileKind.Cdr, "R-" + document.XmlFileName + ".xml", "application/xml", parsed.OriginalXml, cancellationToken);
+            }
+
+            return;
+        }
+
+        var sunatStatus = result.Status;
+        if (SunatResponseCodes.IsInProcess(result.ResponseCode, result.Description)
+            || SunatResponseCodes.IsCdrNotReady(result.ResponseCode, result.Description))
+        {
+            sunatStatus = SunatStatus.InProcess;
+        }
+
+        document.ApplySunatResult(submission, sunatStatus, result.ResponseCode, result.Description, result.Notes, result.Ticket, null, clock.UtcNow);
     }
 
     private async Task GeneratePdfAsync(ElectronicDocument document, CancellationToken cancellationToken)

@@ -29,6 +29,11 @@ public static class IssuerSeriesBootstrap
         catch (Exception ex)
         {
             logger.LogError(ex, "Issuer/series bootstrap failed.");
+            if (ex is Application.Exceptions.ValidationException validation)
+            {
+                logger.LogError("Issuer bootstrap validation errors: {Errors}", string.Join(" | ", validation.Errors));
+            }
+
             throw;
         }
     }

@@ -2,6 +2,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Xml.Linq;
 using Billing.Application.Abstractions;
+using Billing.Application.Commands;
 using Billing.Application.Exceptions;
 using Billing.Domain.Entities;
 using Billing.Domain.Enums;
@@ -222,6 +223,13 @@ public sealed class SunatDirectElectronicDocumentProvider(
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
+            // SUNAT often returns HTTP 500 with a SOAP fault that is business-meaningful
+            // (0140 in process, 0127 CDR not ready). Let parsers map those before throwing.
+            if (body.Contains("Fault", StringComparison.OrdinalIgnoreCase))
+            {
+                return body;
+            }
+
             throw MapSoapOrHttpError(response.StatusCode, body);
         }
 
@@ -230,6 +238,11 @@ public sealed class SunatDirectElectronicDocumentProvider(
 
     private SubmissionResult ParseSendBillResponse(string xml)
     {
+        if (TryMapKnownSoapFault(xml, out var known))
+        {
+            return known!;
+        }
+
         if (xml.Contains("Fault", StringComparison.OrdinalIgnoreCase) && xml.Contains("faultstring", StringComparison.OrdinalIgnoreCase))
         {
             throw MapSoapFault(xml);
@@ -253,6 +266,11 @@ public sealed class SunatDirectElectronicDocumentProvider(
 
     private SubmissionResult ParseSendSummaryResponse(string xml)
     {
+        if (TryMapKnownSoapFault(xml, out var known))
+        {
+            return known!;
+        }
+
         if (xml.Contains("Fault", StringComparison.OrdinalIgnoreCase) && xml.Contains("faultstring", StringComparison.OrdinalIgnoreCase))
         {
             throw MapSoapFault(xml);
@@ -269,6 +287,11 @@ public sealed class SunatDirectElectronicDocumentProvider(
 
     private SubmissionResult ParseStatusResponse(string xml)
     {
+        if (TryMapKnownSoapFault(xml, out var known))
+        {
+            return known!;
+        }
+
         if (xml.Contains("Fault", StringComparison.OrdinalIgnoreCase))
         {
             throw MapSoapFault(xml);
@@ -276,13 +299,26 @@ public sealed class SunatDirectElectronicDocumentProvider(
 
         var content = ExtractBase64(xml, "content");
         var statusCode = ExtractXmlLocalValue(xml, "statusCode");
+        var normalized = SunatResponseCodes.NormalizeCode(statusCode);
         if (content is null)
         {
+            if (SunatResponseCodes.IsInProcess(statusCode, null) || SunatResponseCodes.IsCdrNotReady(statusCode, null))
+            {
+                return new SubmissionResult(
+                    SunatStatus.InProcess,
+                    normalized ?? statusCode,
+                    "SUNAT aún no tiene el CDR disponible. Consulte más tarde.",
+                    null,
+                    null,
+                    null,
+                    null);
+            }
+
             var status = statusCode switch
             {
-                "0" => SunatStatus.Accepted,
-                "98" => SunatStatus.InProcess,
-                "99" => SunatStatus.Rejected,
+                "0" or "0000" => SunatStatus.Accepted,
+                "98" or "0098" => SunatStatus.InProcess,
+                "99" or "0099" => SunatStatus.Rejected,
                 _ => SunatStatus.CommunicationError
             };
             var description = status switch
@@ -292,12 +328,51 @@ public sealed class SunatDirectElectronicDocumentProvider(
                 SunatStatus.Rejected => "SUNAT rechazó la solicitud.",
                 _ => "No CDR content was returned."
             };
-            return new SubmissionResult(status, statusCode, description, null, null, null, null);
+            return new SubmissionResult(status, normalized ?? statusCode, description, null, null, null, null);
         }
 
         var zip = Convert.FromBase64String(content);
         var parsed = cdrParser.Parse(zip);
         return new SubmissionResult(parsed.Status, parsed.ResponseCode, parsed.Description, parsed.Notes, null, zip, parsed.OriginalXml);
+    }
+
+    private static bool TryMapKnownSoapFault(string xml, out SubmissionResult? result)
+    {
+        result = null;
+        if (!xml.Contains("Fault", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var rawCode = ExtractXmlLocalValue(xml, "faultcode")
+                      ?? ExtractXmlLocalValue(xml, "faultCode")
+                      ?? ExtractXmlLocalValue(xml, "statusCode");
+        var message = ExtractXmlLocalValue(xml, "faultstring")
+                      ?? ExtractXmlLocalValue(xml, "message")
+                      ?? string.Empty;
+        var code = SunatResponseCodes.NormalizeCode(rawCode)
+                   ?? SunatResponseCodes.NormalizeCode(ExtractNumericCode(rawCode + " " + message)?.ToString());
+
+        if (SunatResponseCodes.IsAlreadyReported(code, message))
+        {
+            result = new SubmissionResult(SunatStatus.Accepted, code ?? "1033", message, null, null, null, null);
+            return true;
+        }
+
+        if (SunatResponseCodes.IsInProcess(code, message) || SunatResponseCodes.IsCdrNotReady(code, message))
+        {
+            result = new SubmissionResult(
+                SunatStatus.InProcess,
+                code ?? (SunatResponseCodes.IsCdrNotReady(code, message) ? "0127" : "0140"),
+                string.IsNullOrWhiteSpace(message) ? "SUNAT sigue procesando el comprobante." : message,
+                null,
+                null,
+                null,
+                null);
+            return true;
+        }
+
+        return false;
     }
 
     private static string BuildSoapEnvelope(string operation, string user, string password, string fileName, byte[] zip) =>
@@ -351,6 +426,20 @@ public sealed class SunatDirectElectronicDocumentProvider(
         var code = ExtractXmlLocalValue(xml, "faultcode") ?? ExtractXmlLocalValue(xml, "faultCode");
         var message = ExtractXmlLocalValue(xml, "faultstring") ?? ExtractXmlLocalValue(xml, "message") ?? "SUNAT SOAP fault.";
         var numeric = ExtractNumericCode(code + " " + message);
+        var normalized = SunatResponseCodes.NormalizeCode(numeric?.ToString()) ?? SunatResponseCodes.NormalizeCode(code);
+
+        if (SunatResponseCodes.IsInProcess(normalized, message) || SunatResponseCodes.IsCdrNotReady(normalized, message))
+        {
+            // Callers should prefer TryMapKnownSoapFault; keep this as a safe fallback.
+            return new SunatUnavailableException(message);
+        }
+
+        if (message.Contains("autentic", StringComparison.OrdinalIgnoreCase)
+            || normalized is "0100" or "0101" or "0102")
+        {
+            return new SunatRejectionException(message, normalized ?? numeric?.ToString(), null);
+        }
+
         if (numeric is >= 2000 and <= 3999 or >= 1000 and <= 1999)
         {
             return new SunatRejectionException(message, numeric.ToString(), null);

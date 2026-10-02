@@ -265,7 +265,25 @@ public sealed class IssueDocumentHandler(
         }
         catch (Exception ex) when (ex is SunatUnavailableException or TransientCommunicationException)
         {
-            document.MarkFailed(ex is SunatUnavailableException ? "SunatUnavailable" : "TransientCommunicationError", ex.Message, clock.UtcNow);
+            var last = document.Submissions.LastOrDefault();
+            if (last is not null
+                && (SunatResponseCodes.IsInProcess(null, ex.Message) || SunatResponseCodes.IsCdrNotReady(null, ex.Message)))
+            {
+                document.ApplySunatResult(
+                    last,
+                    SunatStatus.InProcess,
+                    SunatResponseCodes.IsCdrNotReady(null, ex.Message) ? "0127" : "0140",
+                    ex.Message,
+                    null,
+                    null,
+                    null,
+                    clock.UtcNow);
+            }
+            else
+            {
+                document.MarkFailed(ex is SunatUnavailableException ? "SunatUnavailable" : "TransientCommunicationError", ex.Message, clock.UtcNow);
+            }
+
             await PersistAsync(document, cancellationToken);
         }
         catch (BusinessRuleException)
@@ -343,6 +361,13 @@ public sealed class IssueDocumentHandler(
             var status = SunatResponseCodes.IsAlreadyReported(submitResult.ResponseCode, submitResult.Description)
                 ? SunatStatus.Accepted
                 : submitResult.Status;
+            if (status != SunatStatus.Accepted
+                && (SunatResponseCodes.IsInProcess(submitResult.ResponseCode, submitResult.Description)
+                    || SunatResponseCodes.IsCdrNotReady(submitResult.ResponseCode, submitResult.Description)))
+            {
+                status = SunatStatus.InProcess;
+            }
+
             document.ApplySunatResult(
                 submission,
                 status,
