@@ -18,7 +18,8 @@ public sealed class SunatDirectElectronicDocumentProvider(
     ICdrParser cdrParser,
     ILogger<SunatDirectElectronicDocumentProvider> logger) : IElectronicDocumentProvider
 {
-    public const string BillClientName = "SunatBill";
+    public const string BillSendClientName = "SunatBillSend";
+    public const string BillConsultClientName = "SunatBillConsult";
     public const string GreClientName = "SunatGre";
 
     public async Task<SubmissionResult> SubmitAsync(ElectronicDocument document, byte[] signedXml, CancellationToken cancellationToken)
@@ -51,7 +52,7 @@ public sealed class SunatDirectElectronicDocumentProvider(
         var zipName = Path.ChangeExtension(xmlFileName, ".zip") ?? xmlFileName + ".zip";
         var zip = ZipPacker.PackXml(xmlFileName, signedXml);
         var envelope = BuildSoapEnvelope("sendSummary", options.Value.SolUser, options.Value.SolPassword, zipName, zip);
-        var xml = await PostSoapAsync(options.Value.BillServiceUrl, envelope, cancellationToken);
+        var xml = await PostSoapAsync(BillSendClientName, options.Value.BillServiceUrl, envelope, cancellationToken);
         return ParseSendSummaryResponse(xml);
     }
 
@@ -75,7 +76,7 @@ public sealed class SunatDirectElectronicDocumentProvider(
               </soapenv:Body>
             </soapenv:Envelope>
             """;
-        var xml = await PostSoapAsync(settings.BillServiceUrl, envelope, cancellationToken);
+        var xml = await PostSoapAsync(BillConsultClientName, settings.BillServiceUrl, envelope, cancellationToken);
         return ParseStatusResponse(xml);
     }
 
@@ -91,7 +92,7 @@ public sealed class SunatDirectElectronicDocumentProvider(
             settings.BillServiceUrl,
             settings.SolUser.Length);
         var envelope = BuildSoapEnvelope("sendBill", settings.SolUser, settings.SolPassword, zipName, zip);
-        var xml = await PostSoapAsync(settings.BillServiceUrl, envelope, cancellationToken);
+        var xml = await PostSoapAsync(BillSendClientName, settings.BillServiceUrl, envelope, cancellationToken);
         var result = ParseSendBillResponse(xml);
         logger.LogInformation(
             "SUNAT sendBill result {Document} Status={Status} Code={Code} HasCdr={HasCdr} Description={Description}",
@@ -127,7 +128,7 @@ public sealed class SunatDirectElectronicDocumentProvider(
             </soapenv:Envelope>
             """;
 
-        var xml = await PostSoapAsync(settings.ConsultServiceUrl, envelope, cancellationToken);
+        var xml = await PostSoapAsync(BillConsultClientName, settings.ConsultServiceUrl, envelope, cancellationToken);
         return ParseStatusResponse(xml);
     }
 
@@ -226,9 +227,9 @@ public sealed class SunatDirectElectronicDocumentProvider(
                ?? throw new SunatUnavailableException("SUNAT did not return a GRE access token.");
     }
 
-    private async Task<string> PostSoapAsync(string url, string envelope, CancellationToken cancellationToken)
+    private async Task<string> PostSoapAsync(string clientName, string url, string envelope, CancellationToken cancellationToken)
     {
-        var client = httpClientFactory.CreateClient(BillClientName);
+        var client = httpClientFactory.CreateClient(clientName);
         using var request = new HttpRequestMessage(HttpMethod.Post, url)
         {
             Content = new StringContent(envelope, Encoding.UTF8, "text/xml")

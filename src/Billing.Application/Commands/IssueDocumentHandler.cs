@@ -225,6 +225,15 @@ public sealed class IssueDocumentHandler(
             {
                 var submitResult = await documentProvider.SubmitAsync(document, signed.Xml, cancellationToken);
                 await ApplySubmissionResultAsync(document, submission, submitResult, AuditAction.SubmissionSent, cancellationToken);
+
+                // If sendBill timed out on the client but SUNAT kept the ZIP, we may only see 0140.
+                // Recover the CDR immediately via getStatusCdr before returning to the ERP.
+                if (document.SunatStatus == SunatStatus.InProcess
+                    && document.GetFile(GeneratedFileKind.Cdr) is null
+                    && !document.Type.IsShippingGuide)
+                {
+                    await TryRecoverCdrAfterInProcessAsync(document, submission, cancellationToken);
+                }
             }
             await PersistAsync(document, cancellationToken);
 
@@ -334,6 +343,35 @@ public sealed class IssueDocumentHandler(
     {
         await documentRepository.UpdateAsync(document, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task TryRecoverCdrAfterInProcessAsync(
+        ElectronicDocument document,
+        DocumentSubmission submission,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            logger.LogInformation("Attempting getStatusCdr recovery after InProcess for {Document}", document.FullNumber);
+            var consult = await documentProvider.GetStatusAsync(document, null, cancellationToken);
+            if (consult.CdrZip is not { Length: > 0 }
+                && consult.Status is not (SunatStatus.Accepted or SunatStatus.AcceptedWithObservations or SunatStatus.Rejected)
+                && !SunatResponseCodes.IsAlreadyReported(consult.ResponseCode, consult.Description))
+            {
+                return;
+            }
+
+            await ApplySubmissionResultAsync(document, submission, consult, AuditAction.SunatConsulted, cancellationToken);
+            logger.LogInformation(
+                "Recovered {Document} via getStatusCdr after InProcess. Status={Status} Code={Code}",
+                document.FullNumber,
+                document.Status,
+                document.Submissions.LastOrDefault()?.ResponseCode);
+        }
+        catch (Exception ex) when (ex is SunatUnavailableException or TransientCommunicationException)
+        {
+            logger.LogInformation(ex, "getStatusCdr recovery after InProcess did not yield a CDR for {Document}", document.FullNumber);
+        }
     }
 
     internal async Task ApplySubmissionResultAsync(

@@ -57,10 +57,19 @@ public static class DependencyInjection
         services.AddScoped<IElectronicDocumentProvider, SunatDirectElectronicDocumentProvider>();
         services.AddSingleton<IIssuerTaxProfile, OptionsIssuerTaxProfile>();
 
-        services.AddHttpClient(SunatDirectElectronicDocumentProvider.BillClientName, (sp, client) =>
+        // sendBill / sendSummary must NEVER auto-retry: a silent transport retry after SUNAT
+        // already accepted the ZIP returns 0140 (InProcess) without CDR and leaves emissions stuck.
+        services.AddHttpClient(SunatDirectElectronicDocumentProvider.BillSendClientName, (sp, client) =>
         {
             var sunat = sp.GetRequiredService<IOptions<SunatOptions>>().Value;
-            client.Timeout = TimeSpan.FromSeconds(Math.Max(sunat.TimeoutSeconds, 30));
+            client.Timeout = TimeSpan.FromSeconds(Math.Max(sunat.TimeoutSeconds, 90));
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("BillingService/1.0");
+        });
+
+        services.AddHttpClient(SunatDirectElectronicDocumentProvider.BillConsultClientName, (sp, client) =>
+        {
+            var sunat = sp.GetRequiredService<IOptions<SunatOptions>>().Value;
+            client.Timeout = TimeSpan.FromSeconds(Math.Max(sunat.TimeoutSeconds, 60));
             client.DefaultRequestHeaders.UserAgent.ParseAdd("BillingService/1.0");
         }).AddStandardResilienceHandler(options => ConfigureTransportRetry(options, 2));
 
@@ -143,9 +152,9 @@ public static class DependencyInjection
         options.Retry.BackoffType = DelayBackoffType.Exponential;
         options.Retry.ShouldHandle = args => ValueTask.FromResult(
             args.Outcome.Exception is HttpRequestException or IOException or TaskCanceledException);
-        options.AttemptTimeout.Timeout = TimeSpan.FromSeconds(30);
-        options.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(90);
-        options.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(60);
+        options.AttemptTimeout.Timeout = TimeSpan.FromSeconds(60);
+        options.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(120);
+        options.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(120);
     }
 
     private static string First(IConfiguration configuration, string key, string fallback)
