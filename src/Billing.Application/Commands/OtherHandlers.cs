@@ -183,9 +183,14 @@ public sealed class ConsultSunatStatusHandler(
             {
                 status = SunatStatus.Accepted;
             }
-            else if (SunatResponseCodes.IsInProcess(result.ResponseCode, result.Description)
-                     || SunatResponseCodes.IsCdrNotReady(result.ResponseCode, result.Description))
+            else if (SunatResponseCodes.IsInProcess(result.ResponseCode, result.Description))
             {
+                status = SunatStatus.InProcess;
+            }
+            else if (SunatResponseCodes.IsCdrNotReady(result.ResponseCode, result.Description)
+                     && document.SunatStatus is SunatStatus.InProcess or SunatStatus.Pending)
+            {
+                // Still waiting for CDR after a known in-process send.
                 status = SunatStatus.InProcess;
             }
 

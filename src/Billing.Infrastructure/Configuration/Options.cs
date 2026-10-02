@@ -44,7 +44,28 @@ public sealed class SunatOptions
 
     public bool IsProduction => string.Equals(Environment, "production", StringComparison.OrdinalIgnoreCase);
 
-    public string SolUser => $"{Ruc}{SolUsername}";
+    /// <summary>
+    /// SUNAT UsernameToken = RUC + usuario SOL secundario.
+    /// If <see cref="SolUsername"/> already starts with the RUC, do not prefix again.
+    /// </summary>
+    public string SolUser
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(SolUsername))
+            {
+                return Ruc;
+            }
+
+            if (!string.IsNullOrWhiteSpace(Ruc)
+                && SolUsername.StartsWith(Ruc, StringComparison.Ordinal))
+            {
+                return SolUsername;
+            }
+
+            return $"{Ruc}{SolUsername}";
+        }
+    }
 }
 
 public sealed class StorageOptions

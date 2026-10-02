@@ -266,13 +266,12 @@ public sealed class IssueDocumentHandler(
         catch (Exception ex) when (ex is SunatUnavailableException or TransientCommunicationException)
         {
             var last = document.Submissions.LastOrDefault();
-            if (last is not null
-                && (SunatResponseCodes.IsInProcess(null, ex.Message) || SunatResponseCodes.IsCdrNotReady(null, ex.Message)))
+            if (last is not null && SunatResponseCodes.IsInProcess(null, ex.Message))
             {
                 document.ApplySunatResult(
                     last,
                     SunatStatus.InProcess,
-                    SunatResponseCodes.IsCdrNotReady(null, ex.Message) ? "0127" : "0140",
+                    "0140",
                     ex.Message,
                     null,
                     null,
@@ -362,8 +361,7 @@ public sealed class IssueDocumentHandler(
                 ? SunatStatus.Accepted
                 : submitResult.Status;
             if (status != SunatStatus.Accepted
-                && (SunatResponseCodes.IsInProcess(submitResult.ResponseCode, submitResult.Description)
-                    || SunatResponseCodes.IsCdrNotReady(submitResult.ResponseCode, submitResult.Description)))
+                && SunatResponseCodes.IsInProcess(submitResult.ResponseCode, submitResult.Description))
             {
                 status = SunatStatus.InProcess;
             }

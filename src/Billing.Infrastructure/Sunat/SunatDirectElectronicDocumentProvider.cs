@@ -83,9 +83,24 @@ public sealed class SunatDirectElectronicDocumentProvider(
     {
         var zipName = document.XmlFileName + ".zip";
         var zip = ZipPacker.PackXml(document.XmlFileName + ".xml", signedXml);
-        var envelope = BuildSoapEnvelope("sendBill", options.Value.SolUser, options.Value.SolPassword, zipName, zip);
-        var xml = await PostSoapAsync(options.Value.BillServiceUrl, envelope, cancellationToken);
-        return ParseSendBillResponse(xml);
+        var settings = options.Value;
+        logger.LogInformation(
+            "SUNAT sendBill {Document} Env={Env} Url={Url} SolUserLength={SolUserLength}",
+            document.FullNumber,
+            settings.Environment,
+            settings.BillServiceUrl,
+            settings.SolUser.Length);
+        var envelope = BuildSoapEnvelope("sendBill", settings.SolUser, settings.SolPassword, zipName, zip);
+        var xml = await PostSoapAsync(settings.BillServiceUrl, envelope, cancellationToken);
+        var result = ParseSendBillResponse(xml);
+        logger.LogInformation(
+            "SUNAT sendBill result {Document} Status={Status} Code={Code} HasCdr={HasCdr} Description={Description}",
+            document.FullNumber,
+            result.Status,
+            result.ResponseCode,
+            result.CdrZip is { Length: > 0 },
+            result.Description);
+        return result;
     }
 
     private async Task<SubmissionResult> GetStatusCdrAsync(ElectronicDocument document, CancellationToken cancellationToken)
@@ -238,7 +253,9 @@ public sealed class SunatDirectElectronicDocumentProvider(
 
     private SubmissionResult ParseSendBillResponse(string xml)
     {
-        if (TryMapKnownSoapFault(xml, out var known))
+        // On sendBill, only 0140 / already-reported are recoverable business faults.
+        // 0127 (no CDR) belongs to getStatusCdr and must not freeze a first emission as InProcess.
+        if (TryMapKnownSoapFault(xml, allowCdrNotReadyAsInProcess: false, out var known))
         {
             return known!;
         }
@@ -266,7 +283,7 @@ public sealed class SunatDirectElectronicDocumentProvider(
 
     private SubmissionResult ParseSendSummaryResponse(string xml)
     {
-        if (TryMapKnownSoapFault(xml, out var known))
+        if (TryMapKnownSoapFault(xml, allowCdrNotReadyAsInProcess: true, out var known))
         {
             return known!;
         }
@@ -287,7 +304,7 @@ public sealed class SunatDirectElectronicDocumentProvider(
 
     private SubmissionResult ParseStatusResponse(string xml)
     {
-        if (TryMapKnownSoapFault(xml, out var known))
+        if (TryMapKnownSoapFault(xml, allowCdrNotReadyAsInProcess: true, out var known))
         {
             return known!;
         }
@@ -302,12 +319,25 @@ public sealed class SunatDirectElectronicDocumentProvider(
         var normalized = SunatResponseCodes.NormalizeCode(statusCode);
         if (content is null)
         {
-            if (SunatResponseCodes.IsInProcess(statusCode, null) || SunatResponseCodes.IsCdrNotReady(statusCode, null))
+            if (SunatResponseCodes.IsInProcess(statusCode, null))
             {
                 return new SubmissionResult(
                     SunatStatus.InProcess,
                     normalized ?? statusCode,
-                    "SUNAT aún no tiene el CDR disponible. Consulte más tarde.",
+                    "SUNAT sigue procesando el comprobante.",
+                    null,
+                    null,
+                    null,
+                    null);
+            }
+
+            if (SunatResponseCodes.IsCdrNotReady(statusCode, null))
+            {
+                // Soft signal for callers: no CDR yet. Retry must decide whether to resend.
+                return new SubmissionResult(
+                    SunatStatus.CommunicationError,
+                    normalized ?? "0127",
+                    "SUNAT aún no tiene el CDR disponible (0127).",
                     null,
                     null,
                     null,
@@ -336,7 +366,7 @@ public sealed class SunatDirectElectronicDocumentProvider(
         return new SubmissionResult(parsed.Status, parsed.ResponseCode, parsed.Description, parsed.Notes, null, zip, parsed.OriginalXml);
     }
 
-    private static bool TryMapKnownSoapFault(string xml, out SubmissionResult? result)
+    private static bool TryMapKnownSoapFault(string xml, bool allowCdrNotReadyAsInProcess, out SubmissionResult? result)
     {
         result = null;
         if (!xml.Contains("Fault", StringComparison.OrdinalIgnoreCase))
@@ -350,8 +380,10 @@ public sealed class SunatDirectElectronicDocumentProvider(
         var message = ExtractXmlLocalValue(xml, "faultstring")
                       ?? ExtractXmlLocalValue(xml, "message")
                       ?? string.Empty;
+        // Prefer faultcode digits; do not mix message numbers ("15 minutos") into the SUNAT code.
         var code = SunatResponseCodes.NormalizeCode(rawCode)
-                   ?? SunatResponseCodes.NormalizeCode(ExtractNumericCode(rawCode + " " + message)?.ToString());
+                   ?? SunatResponseCodes.NormalizeCode(ExtractNumericCode(rawCode)?.ToString())
+                   ?? SunatResponseCodes.NormalizeCode(ExtractNumericCode(message)?.ToString());
 
         if (SunatResponseCodes.IsAlreadyReported(code, message))
         {
@@ -359,12 +391,25 @@ public sealed class SunatDirectElectronicDocumentProvider(
             return true;
         }
 
-        if (SunatResponseCodes.IsInProcess(code, message) || SunatResponseCodes.IsCdrNotReady(code, message))
+        if (SunatResponseCodes.IsInProcess(code, message))
         {
             result = new SubmissionResult(
                 SunatStatus.InProcess,
-                code ?? (SunatResponseCodes.IsCdrNotReady(code, message) ? "0127" : "0140"),
+                code ?? "0140",
                 string.IsNullOrWhiteSpace(message) ? "SUNAT sigue procesando el comprobante." : message,
+                null,
+                null,
+                null,
+                null);
+            return true;
+        }
+
+        if (allowCdrNotReadyAsInProcess && SunatResponseCodes.IsCdrNotReady(code, message))
+        {
+            result = new SubmissionResult(
+                SunatStatus.CommunicationError,
+                code ?? "0127",
+                string.IsNullOrWhiteSpace(message) ? "SUNAT aún no tiene el CDR disponible (0127)." : message,
                 null,
                 null,
                 null,

@@ -110,18 +110,10 @@ public sealed class RetrySubmissionHandler(
         }
         catch (Exception ex) when (ex is SunatUnavailableException or TransientCommunicationException)
         {
-            if (SunatResponseCodes.IsInProcess(null, ex.Message) || SunatResponseCodes.IsCdrNotReady(null, ex.Message))
+            if (SunatResponseCodes.IsInProcess(null, ex.Message))
             {
                 var submission = document.Submissions.LastOrDefault() ?? document.StartSubmission(clock.UtcNow);
-                document.ApplySunatResult(
-                    submission,
-                    SunatStatus.InProcess,
-                    SunatResponseCodes.IsCdrNotReady(null, ex.Message) ? "0127" : "0140",
-                    ex.Message,
-                    null,
-                    null,
-                    null,
-                    clock.UtcNow);
+                document.ApplySunatResult(submission, SunatStatus.InProcess, "0140", ex.Message, null, null, null, clock.UtcNow);
             }
             else
             {
@@ -136,8 +128,9 @@ public sealed class RetrySubmissionHandler(
     }
 
     /// <summary>
-    /// If SUNAT already has the document (CDR / in process), do not resend the ZIP.
-    /// Resending while 0140 is active extends the lock and turns recoverable states into communicationError.
+    /// Recover CDR / terminal status without resending.
+    /// Only skip sendBill when SUNAT already has the document (CDR, accepted, rejected, or true 0140).
+    /// 0127 alone must NOT skip resend — it also means "never received".
     /// </summary>
     private async Task<bool> TryRecoverFromConsultAsync(ElectronicDocument document, CancellationToken cancellationToken)
     {
@@ -153,22 +146,14 @@ public sealed class RetrySubmissionHandler(
         }
         catch (Exception ex) when (ex is SunatUnavailableException or TransientCommunicationException)
         {
-            if (SunatResponseCodes.IsInProcess(null, ex.Message) || SunatResponseCodes.IsCdrNotReady(null, ex.Message))
+            if (SunatResponseCodes.IsInProcess(null, ex.Message) && LooksAlreadyReceivedBySunat(document))
             {
                 var submission = document.StartSubmission(clock.UtcNow);
-                document.ApplySunatResult(
-                    submission,
-                    SunatStatus.InProcess,
-                    SunatResponseCodes.IsCdrNotReady(null, ex.Message) ? "0127" : "0140",
-                    ex.Message,
-                    null,
-                    null,
-                    null,
-                    clock.UtcNow);
+                document.ApplySunatResult(submission, SunatStatus.InProcess, "0140", ex.Message, null, null, null, clock.UtcNow);
                 return true;
             }
 
-            logger.LogInformation(ex, "Consult before retry returned no recoverable state for {Document}", document.FullNumber);
+            logger.LogInformation(ex, "Consult before retry returned no recoverable state for {Document}; will resend.", document.FullNumber);
             return false;
         }
 
@@ -176,14 +161,70 @@ public sealed class RetrySubmissionHandler(
             || consult.Status is SunatStatus.Accepted
                 or SunatStatus.AcceptedWithObservations
                 or SunatStatus.Rejected
-            || SunatResponseCodes.IsAlreadyReported(consult.ResponseCode, consult.Description)
-            || SunatResponseCodes.IsInProcess(consult.ResponseCode, consult.Description)
-            || SunatResponseCodes.IsCdrNotReady(consult.ResponseCode, consult.Description)
-            || consult.Status == SunatStatus.InProcess)
+            || SunatResponseCodes.IsAlreadyReported(consult.ResponseCode, consult.Description))
         {
             var submission = document.StartSubmission(clock.UtcNow);
             await ApplySubmissionResultAsync(document, submission, consult, cancellationToken);
             return true;
+        }
+
+        if (SunatResponseCodes.IsInProcess(consult.ResponseCode, consult.Description)
+            || consult.Status == SunatStatus.InProcess)
+        {
+            var submission = document.StartSubmission(clock.UtcNow);
+            document.ApplySunatResult(
+                submission,
+                SunatStatus.InProcess,
+                consult.ResponseCode ?? "0140",
+                consult.Description,
+                consult.Notes,
+                consult.Ticket,
+                null,
+                clock.UtcNow);
+            return true;
+        }
+
+        // 0127 / CommunicationError: only wait if a prior attempt already proved SUNAT has the ZIP.
+        if ((SunatResponseCodes.IsCdrNotReady(consult.ResponseCode, consult.Description)
+             || consult.Status == SunatStatus.CommunicationError)
+            && LooksAlreadyReceivedBySunat(document))
+        {
+            var submission = document.StartSubmission(clock.UtcNow);
+            document.ApplySunatResult(
+                submission,
+                SunatStatus.InProcess,
+                consult.ResponseCode ?? "0127",
+                consult.Description ?? "SUNAT aún procesa el comprobante; CDR no disponible.",
+                consult.Notes,
+                consult.Ticket,
+                null,
+                clock.UtcNow);
+            return true;
+        }
+
+        logger.LogInformation(
+            "Consult before retry for {Document} Code={Code} Status={Status}; will resend ZIP.",
+            document.FullNumber,
+            consult.ResponseCode,
+            consult.Status);
+        return false;
+    }
+
+    private static bool LooksAlreadyReceivedBySunat(ElectronicDocument document)
+    {
+        if (document.SunatStatus is SunatStatus.InProcess or SunatStatus.Pending
+            or SunatStatus.Accepted or SunatStatus.AcceptedWithObservations)
+        {
+            return true;
+        }
+
+        foreach (var submission in document.Submissions)
+        {
+            if (SunatResponseCodes.IsInProcess(submission.ResponseCode, submission.Description)
+                || SunatResponseCodes.IsAlreadyReported(submission.ResponseCode, submission.Description))
+            {
+                return true;
+            }
         }
 
         return false;
@@ -218,8 +259,7 @@ public sealed class RetrySubmissionHandler(
         }
 
         var sunatStatus = result.Status;
-        if (SunatResponseCodes.IsInProcess(result.ResponseCode, result.Description)
-            || SunatResponseCodes.IsCdrNotReady(result.ResponseCode, result.Description))
+        if (SunatResponseCodes.IsInProcess(result.ResponseCode, result.Description))
         {
             sunatStatus = SunatStatus.InProcess;
         }
