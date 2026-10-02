@@ -1,3 +1,4 @@
+using Billing.Domain.Catalogs;
 using Billing.Domain.Entities;
 using Billing.Domain.Enums;
 using Billing.Domain.Exceptions;
@@ -91,6 +92,12 @@ public static class DocumentStatusMachine
             && last.Status is SunatStatus.Pending or SunatStatus.InProcess)
         {
             return true;
+        }
+
+        // getStatusCdr (producción) solo aplica a factura / NC / ND — no a boletas.
+        if (document.Type == DocumentType.Receipt)
+        {
+            return false;
         }
 
         if (document.Status is DocumentStatus.Sent or DocumentStatus.Failed)

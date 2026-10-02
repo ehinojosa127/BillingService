@@ -123,14 +123,24 @@ public sealed class IssueDocumentHandler(
             guide = MapGuide(request.ShippingGuide);
         }
 
-        var drafts = request.Items.Select(item => new DocumentItemDraft(
-            item.Code,
-            item.Description,
-            item.Quantity,
-            item.UnitCode,
-            ResolveUnitValue(item),
-            item.Discount,
-            TaxAffectationCode.FromCode(item.TaxAffectation))).ToArray();
+        var drafts = request.Items.Select(item =>
+        {
+            var affectation = TaxAffectationCode.FromCode(item.TaxAffectation);
+            // RUS/NRUS no declara IGV: forzar exonerado aunque el ERP envíe "10".
+            if (taxProfile.Regime == TaxRegime.Rus && affectation.IgvRate > 0m)
+            {
+                affectation = TaxAffectationCode.ExoneradoOnerosa;
+            }
+
+            return new DocumentItemDraft(
+                item.Code,
+                item.Description,
+                item.Quantity,
+                item.UnitCode,
+                ResolveUnitValue(item, affectation),
+                item.Discount,
+                affectation);
+        }).ToArray();
 
         ElectronicDocument? created = null;
         await unitOfWork.ExecuteInTransactionAsync(async ct =>
@@ -230,7 +240,8 @@ public sealed class IssueDocumentHandler(
                 // Recover the CDR immediately via getStatusCdr before returning to the ERP.
                 if (document.SunatStatus == SunatStatus.InProcess
                     && document.GetFile(GeneratedFileKind.Cdr) is null
-                    && !document.Type.IsShippingGuide)
+                    && !document.Type.IsShippingGuide
+                    && document.Type != DocumentType.Receipt)
                 {
                     await TryRecoverCdrAfterInProcessAsync(document, submission, cancellationToken);
                 }
@@ -455,7 +466,7 @@ public sealed class IssueDocumentHandler(
             string.IsNullOrWhiteSpace(dto.DriverDocumentType) ? null : IdentityDocumentType.FromCode(dto.DriverDocumentType),
             dto.Observation);
 
-    private static decimal ResolveUnitValue(IssueItemDto item)
+    private static decimal ResolveUnitValue(IssueItemDto item, TaxAffectationCode affectation)
     {
         if (item.TaxInclusiveUnitPrice is not decimal inclusive || inclusive <= 0)
         {
@@ -466,6 +477,11 @@ public sealed class IssueDocumentHandler(
         if (item.Quantity <= 0)
         {
             return 0m;
+        }
+
+        if (affectation.IgvRate <= 0m)
+        {
+            return lineTotal / item.Quantity;
         }
 
         return lineTotal / item.Quantity / (1m + TaxRates.Igv);

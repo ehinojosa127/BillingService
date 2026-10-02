@@ -3,6 +3,7 @@ using Billing.Application.DTOs;
 using Billing.Application.Exceptions;
 using Billing.Application.Pdf;
 using Billing.Application.Queries;
+using Billing.Domain.Catalogs;
 using Billing.Domain.Entities;
 using Billing.Domain.Enums;
 using Billing.Domain.Services;
@@ -177,6 +178,14 @@ public sealed class ConsultSunatStatusHandler(
         }
         else
         {
+            // getStatusCdr only works for facturas/NC/ND in production — not boletas (03).
+            if (document.Type == DocumentType.Receipt)
+            {
+                throw new ConflictException(
+                    "CONSULT_NOT_SUPPORTED",
+                    $"La boleta {document.FullNumber} no se puede consultar con getStatusCdr. Use Reintentar envío para obtener el CDR desde sendBill.");
+            }
+
             result = await documentProvider.GetStatusAsync(document, last?.Ticket, cancellationToken);
             var status = result.Status;
             if (SunatResponseCodes.IsAlreadyReported(result.ResponseCode, result.Description))

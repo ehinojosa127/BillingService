@@ -2,6 +2,7 @@ using Billing.Application.Abstractions;
 using Billing.Application.DTOs;
 using Billing.Application.Exceptions;
 using Billing.Application.Pdf;
+using Billing.Domain.Catalogs;
 using Billing.Domain.Entities;
 using Billing.Domain.Enums;
 using Billing.Domain.Services;
@@ -129,13 +130,20 @@ public sealed class RetrySubmissionHandler(
 
     /// <summary>
     /// Recover CDR / terminal status without resending.
-    /// Only skip sendBill when SUNAT already has the document (CDR, accepted, rejected, or true 0140).
-    /// 0127 alone must NOT skip resend — it also means "never received".
+    /// Boletas (03): getStatusCdr is NOT available in SUNAT — only sendBill returns the CDR.
+    /// Never skip sendBill for receipts based on consult alone.
     /// </summary>
     private async Task<bool> TryRecoverFromConsultAsync(ElectronicDocument document, CancellationToken cancellationToken)
     {
-        if (document.Type.IsShippingGuide)
+        if (document.Type.IsShippingGuide || document.Type == DocumentType.Receipt)
         {
+            if (document.Type == DocumentType.Receipt)
+            {
+                logger.LogInformation(
+                    "Retry for boleta {Document}: skipping getStatusCdr (SUNAT only supports it for facturas/NC/ND). Will resend ZIP.",
+                    document.FullNumber);
+            }
+
             return false;
         }
 
